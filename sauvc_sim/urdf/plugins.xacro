@@ -1,0 +1,58 @@
+<?xml version="1.0" ?>
+<robot name="auv" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <gazebo reference="base_link"> 
+      <plugin
+        filename="ignition-gazebo-hydrodynamics-system"
+        name="ignition::gazebo::systems::Hydrodynamics">
+        <link_name>auv_link</link_name>
+        <!-- <xDotU>-4.876161</xDotU>
+        <yDotV>-126.324739</yDotV>
+        <zDotW>-126.324739</zDotW>
+        <kDotP>0</kDotP>
+        <mDotQ>-33.46</mDotQ>
+        <nDotR>-33.46</nDotR>
+        <xUabsU>-6.2282</xUabsU>
+        <xU>0</xU>
+        <yVabsV>-601.27</yVabsV>
+        <yV>0</yV>
+        <zWabsW>-601.27</zWabsW>
+        <zW>0</zW>
+        <kPabsP>-0.1916</kPabsP>
+        <kP>0</kP>
+        <mQabsQ>-632.698957</mQabsQ>
+        <mQ>0</mQ>
+        <nRabsR>-632.698957</nRabsR>
+        <nR>0</nR> -->
+
+        <!-- Added mass coefficients - reduced by factor of 10 -->
+        <xDotU>-0.49</xDotU>
+        <yDotV>-12.6</yDotV>
+        <zDotW>-12.6</zDotW>
+        <kDotP>0</kDotP>
+        <mDotQ>-3.35</mDotQ>
+        <nDotR>-3.35</nDotR>
+        <!-- Linear drag coefficients - reduced by factor of 100 -->
+        <xUabsU>-0.062</xUabsU>
+        <xU>0</xU>
+        <yVabsV>-6.01</yVabsV>
+        <yV>0</yV>
+        <zWabsW>-6.01</zWabsW>
+        <zW>0</zW>
+        <!-- Angular drag coefficients - reduced by factor of 1000 -->
+        <kPabsP>-0.0002</kPabsP>
+        <kP>0</kP>
+        <mQabsQ>-0.63</mQabsQ>
+        <mQ>0</mQ>
+        <nRabsR>-0.63</nRabsR>
+        <nR>0</nR>
+      </plugin>
+
+      <plugin filename="libignition-gazebo-velocity-control-system.so"
+        name="ignition::gazebo::systems::VelocityControl">
+          <link_name>auv_link</link_name>
+          <topic>/cmd_vel</topic>
+          <initial_linear>0.0 0.0 0.0</initial_linear>
+          <initial_angular>0.0 0.0 0.0</initial_angular>
+      </plugin>
+    </gazebo>
+</robot>

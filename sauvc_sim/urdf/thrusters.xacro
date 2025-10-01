@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<robot name="auv" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- HYDRODYNAMICS PLUGIN -->
+  <xacro:macro name="thruster_plugin_macro" params="joint">
+    <gazebo>
+      <plugin filename="gz-sim-thruster-system" name="gz::sim::systems::Thruster">
+        <namespace>rexros</namespace>
+        <joint_name>${joint}</joint_name>
+        <fluid_density>1000.0</fluid_density>
+        <thrust_coefficient>0.00031</thrust_coefficient>
+        <velocity_control>true</velocity_control>
+        <use_angvel_cmd>false</use_angvel_cmd>
+      </plugin>
+    </gazebo>
+  </xacro:macro>
+  <xacro:thruster_plugin_macro joint="thruster1_joint"/>
+  <xacro:thruster_plugin_macro joint="thruster2_joint"/>
+  <xacro:thruster_plugin_macro joint="thruster3_joint"/>
+  <xacro:thruster_plugin_macro joint="thruster4_joint"/>
+  <xacro:thruster_plugin_macro joint="thruster5_joint"/>
+  <xacro:thruster_plugin_macro joint="thruster6_joint"/>
+  <xacro:thruster_plugin_macro joint="thruster7_joint"/>
+  <xacro:thruster_plugin_macro joint="thruster8_joint"/>
+
+
+</robot>
