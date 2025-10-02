@@ -3,39 +3,59 @@ from rclpy.node import Node
 from joystick_msgs.msg import JoystickData
 import serial
 import numpy as np
+import time
 
 class ROVPWMController(Node):
+    """
+    This node subscribes to joystick data, calculates thruster PWM values
+    using a mixing matrix, and sends them to an Arduino over serial.
+    It includes a proper initialization sequence and robust error handling.
+    """
     def __init__(self):
         super().__init__('rov_pwm_controller')
+
+        # --- Initialize attributes FIRST to prevent AttributeError on failed connection ---
+        self.arduino = None
+        self.last_packet_sent = ""
+        self.control_timer = None
 
         # --- Parameters ---
         self.declare_parameter('arduino_port', '/dev/ttyACM0')
         port = self.get_parameter('arduino_port').get_parameter_value().string_value
         
-        # --- Arduino Connection ---
         try:
             self.arduino = serial.Serial(port, baudrate=115200, timeout=0.1)
-            self.get_logger().info(f"Successfully connected to Arduino on port {port}")
-        except Exception as e:
-            self.get_logger().error(f"Failed to connect to Arduino on port {port}: {e}")
-            # Exit or handle the error appropriately
-            rclpy.shutdown()
+            self.get_logger().info(f"Successfully connected to Arduino on {port}")
+        except serial.SerialException as e:
+            self.get_logger().error(f"Failed to connect to Arduino on {port}: {e}")
+            self.get_logger().error("Shutting down node. Check the port and permissions (e.g., 'sudo chmod a+rw /dev/ttyACM0')")
+            # Return without setting up the rest of the node.
+            # The 'finally' block in main() will still call disarm_motors.
             return
 
-        # --- Thruster Mixing Matrix (6x6) ---
-        # This matrix defines how joystick inputs map to the 6 thrusters
+        # --- Thruster Mixing Matrix (6x6) for BlueROV2-style frame ---
+        # Maps [surge, sway, heave, roll, pitch, yaw] to 6 thrusters
         self.mixing_matrix = np.array([
-            [1,  0,  1,  1, 0,  0],  # T1 (surge, sway, heave, roll, pitch, yaw)
-            [1,  0, -1, -1, 0,  0],  # T2
-            [1,  0, -1,  1, 0,  0],  # T3
-            [1,  0,  1, -1, 0,  0],  # T4
-            [0,  1,  0,  0, 0,  1],  # T5
-            [0,  1,  0,  0, 0, -1],  # T6
+            [1,  0,  0,  0,  1,  1],  # T1 (Front-Left-Horizontal)
+            [1,  0,  0,  0, -1, -1],  # T2 (Front-Right-Horizontal)
+            [1,  0,  0,  0, -1,  1],  # T3 (Rear-Left-Horizontal)
+            [1,  0,  0,  0,  1, -1],  # T4 (Rear-Right-Horizontal)
+            [0,  1,  1, -1,  0,  0],  # T5 (Front-Vertical)
+            [0,  1, -1,  1,  0,  0],  # T6 (Rear-Vertical)
         ])
 
-        # --- Subscriber ---
-        # Subscribes to the joystick data topic. When a message is received,
-        # the joystick_data_callback function is executed.
+        # --- State ---
+        self.thrust_input = np.zeros(6)
+        
+        # --- Arming Sequence ---
+        self.get_logger().info("Waiting for Arduino to initialize...")
+        time.sleep(2) # Wait for 2 seconds
+        self.get_logger().info("Sending initial neutral signal.")
+        for _ in range(5):
+            self.send_pwm_packet([1500] * 6)
+            time.sleep(0.1)
+
+        # --- Subscribers ---
         self.create_subscription(
             JoystickData,
             'joystick_data',
@@ -43,59 +63,78 @@ class ROVPWMController(Node):
             10
         )
 
-        self.get_logger().info("ROV PWM Controller is running and waiting for joystick data...")
+        # --- Main Control Loop Timer ---
+        self.control_timer = self.create_timer(0.05, self.run_control_loop) # 20 Hz
+        self.get_logger().info("ROV PWM Controller Initialized and Armed.")
 
     def joystick_data_callback(self, msg):
-        """
-        This function is called every time a new message is received on the 'joystick_data' topic.
-        """
-        # 1. Create a numpy array from the incoming joystick message
-        thrust_input = np.array([
-            msg.x,      # Corresponds to surge
-            msg.y,      # Corresponds to sway
-            msg.z,      # Corresponds to heave
-            msg.yaw,    # Corresponds to yaw
-            msg.pitch,  # Corresponds to pitch
-            msg.roll    # Corresponds to roll
+        """Processes incoming joystick data and maps it to thrust inputs."""
+        self.thrust_input = np.array([
+            msg.x, msg.y, msg.z,
+            msg.yaw, msg.pitch, msg.roll
         ])
 
-        # 2. Log the received data for debugging
-        self.get_logger().info(f"Received Joystick Data: {thrust_input}")
-
-        # 3. Apply the mixing matrix to calculate individual thruster outputs
-        # The '@' symbol is matrix multiplication
-        thrust_output = self.mixing_matrix @ thrust_input
+    def run_control_loop(self):
+        """Calculates and sends PWM signals based on the latest thrust input."""
+        thrust_output = self.mixing_matrix @ self.thrust_input
         
-        # 4. Clip the values to ensure they are within the [-1.0, 1.0] range
-        thrust_output = np.clip(thrust_output, -1.0, 1.0)
-        
-        # 5. Convert the [-1.0, 1.0] values to a PWM signal range [1100, 1900]
-        # 1500 is neutral, 1100 is full reverse, 1900 is full forward.
+        max_thrust = np.max(np.abs(thrust_output))
+        if max_thrust > 1.0:
+            thrust_output /= max_thrust
+            
         thrust_pwm = [int(1500 + 400 * t) for t in thrust_output]
-
-        # 6. Format the PWM values into a comma-separated string with a newline
-        packet = ','.join(str(p) for p in thrust_pwm) + '\n'
+        self.send_pwm_packet(thrust_pwm)
         
-        # 7. Send the formatted string to the Arduino
+    def send_pwm_packet(self, pwm_values):
+        """Encodes and sends a list of PWM values to the Arduino."""
+        # This check prevents errors if the serial port was never opened.
+        if not self.arduino or not self.arduino.is_open:
+            return
+
+        packet = ','.join(str(p) for p in pwm_values) + '\n'
+        
+        if packet != self.last_packet_sent:
+            self.get_logger().info(f"Sending PWM: {packet.strip()}")
+            self.last_packet_sent = packet
+            
         try:
             self.arduino.write(packet.encode('utf-8'))
-            self.get_logger().info(f"Sent PWM to Arduino: {packet.strip()}")
         except Exception as e:
-            self.get_logger().error(f"Failed to write to serial port: {e}")
+            self.get_logger().error(f"Serial write failed: {e}")
+
+    def disarm_motors(self):
+        """Sends a neutral signal to all motors and closes the connection."""
+        self.get_logger().info("Disarming motors...")
+        # Check if arduino object exists and is open before trying to use it.
+        if self.arduino and self.arduino.is_open:
+            try:
+                self.send_pwm_packet([1500] * 6)
+                time.sleep(0.1) # Ensure the packet is sent
+                self.arduino.close()
+                self.get_logger().info("Serial port closed.")
+            except Exception as e:
+                self.get_logger().error(f"Error while closing serial port: {e}")
+
 
 def main(args=None):
     rclpy.init(args=args)
     node = ROVPWMController()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        # Ensure the serial connection is closed when the node is shut down
-        if node.arduino and node.arduino.is_open:
-            node.arduino.close()
-        node.destroy_node()
+    
+    # Only spin if the node was initialized correctly (arduino connected)
+    if node.arduino and node.arduino.is_open:
+        try:
+            rclpy.spin(node)
+        except KeyboardInterrupt:
+            node.get_logger().info("Keyboard interrupt received.")
+        finally:
+            node.get_logger().info("Shutting down from spin.")
+            node.disarm_motors()
+            node.destroy_node()
+    
+    # If initialization failed, rclpy.ok() might still be true, so we clean up.
+    if rclpy.ok():
         rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
+
